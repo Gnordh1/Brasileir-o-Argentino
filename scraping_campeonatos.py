@@ -8,7 +8,12 @@ import time
 # --- CONFIGURAÇÕES DOS CAMPEONATOS ---
 CAMPEONATOS = [
     {"nome": "Argentina", "id": 155, "seasons": [70268, 77826]},
-    {"nome": "Brasil", "id": 325, "seasons": [72034]}
+    {"nome": "Brasil", "id": 325, "seasons": [72034]},
+    {"nome": "Colombia Apertura", "id": 11539, "seasons": [70681]},
+    {"nome": "Colombia Clausura", "id": 11536, "seasons": [77825]},
+    {"nome": "MLS", "id": 242, "seasons": [70158]},
+    {"nome": "Mexico Apertura", "id": 11621, "seasons": [61419]},
+    {"nome": "Mexico Clausura", "id": 11620, "seasons": [87699]}
 ]
 
 def calcular_idade(timestamp):
@@ -31,8 +36,9 @@ def buscar_ids_e_nomes():
             for camp in CAMPEONATOS:
                 for season in camp['seasons']:
                     print(f"🔍 Buscando calendário: {camp['nome']} (ID: {camp['id']}) | Temporada {season}...")
-                    # Temporada Regular - Brasileirão precisa de 38 rodadas
-                    for r in range(1, 39): 
+                    
+                    # 1. Varredura por Rodadas (Até 47 para cobrir Liguillas e Playoffs)
+                    for r in range(1, 48): 
                         url = f"https://api.sofascore.com/api/v1/unique-tournament/{camp['id']}/season/{season}/events/round/{r}"
                         try:
                             page.goto(url, wait_until="networkidle", timeout=30000)
@@ -52,7 +58,7 @@ def buscar_ids_e_nomes():
                                         ids_vistos.add(e_id)
                         except: continue
 
-                    # Mata-mata ou Blocos Recentes
+                    # 2. Varredura por Blocos Recentes (Segurança para Finais)
                     for bloco in range(0, 11): 
                         url_bloco = f"https://api.sofascore.com/api/v1/unique-tournament/{camp['id']}/season/{season}/events/last/{bloco}"
                         try:
@@ -107,7 +113,7 @@ def extrair_consolidado():
                             if tipo == 'yellow': cartoes_jogo[p_id]['amarelo'] += 1
                             elif tipo in ['red', 'yellowRed']: cartoes_jogo[p_id]['vermelho'] += 1
 
-                # 2. LINEUPS (Estatísticas, Biometria e Foto)
+                # 2. LINEUPS
                 page.goto(f"https://api.sofascore.com/api/v1/event/{jogo['id']}/lineups", timeout=30000)
                 lineup_text = page.locator("body").inner_text()
                 if not lineup_text or lineup_text == "{}": continue
@@ -146,11 +152,10 @@ def extrair_consolidado():
                             **{k: v for k, v in stats.items() if not isinstance(v, dict)}
                         })
                 
-                if (i + 1) % 10 == 0:
+                if (i + 1) % 20 == 0:
                     print(f"✅ {i+1}/{len(jogos)} jogos processados...")
 
-            except Exception as e:
-                print(f"⚠️ Pulei o jogo {jogo['id']} devido a um erro: {e}")
+            except Exception:
                 continue
 
         browser.close()
@@ -159,16 +164,16 @@ def extrair_consolidado():
         print("📊 Consolidando estatísticas finais...")
         df = pd.DataFrame(lista_bruta)
         
-        # 1. Lógica de Último Time e Foto Atual
+        # 1. Último Time e Foto
         df_ultimo = df.sort_values('timestamp', ascending=False).drop_duplicates('player_id')
         df_ultimo_info = df_ultimo[['player_id', 'time', 'url_foto']].rename(columns={'time': 'time_atual'})
 
-        # 2. Posição onde mais atuou (Baseado em Minutos)
+        # 2. Posição Oficial (Maior tempo em campo)
         df_pos = df.groupby(['player_id', 'posicao'])['minutesPlayed'].sum().reset_index()
         df_pos = df_pos.sort_values('minutesPlayed', ascending=False).drop_duplicates('player_id')
         df_pos_oficial = df_pos[['player_id', 'posicao']].rename(columns={'posicao': 'pos_oficial'})
 
-        # 3. Agregação Geral (Soma scouts, Média rating)
+        # 3. Agregação Geral
         cols_meta = ['player_id', 'nome', 'url_foto', 'time', 'posicao', 'pos_oficial', 'time_atual', 'idade', 'nacionalidade', 'altura', 'timestamp']
         agg_rules = {col: 'sum' for col in df.columns if col not in cols_meta}
         if 'rating' in agg_rules: agg_rules['rating'] = 'mean'
@@ -178,22 +183,18 @@ def extrair_consolidado():
             'valor_mercado': 'max'
         }).reset_index()
 
-        # 4. Merge das informações consolidadas
+        # 4. Merges
         df_final = df_final.merge(df_ultimo_info, on='player_id').merge(df_pos_oficial, on='player_id')
-        
-        # Limpeza e Formatação
         df_final = df_final.rename(columns={'time_atual': 'time', 'pos_oficial': 'posicao'}).round(2)
         
-        # Ordem de colunas para o Power BI
         ordem_bi = ['player_id', 'nome', 'url_foto', 'time', 'nacionalidade', 'posicao', 'idade', 'altura', 'matches', 'valor_mercado', 'cartao_amarelo', 'cartao_vermelho']
         todas_cols = ordem_bi + [c for c in df_final.columns if c not in ordem_bi and c != 'timestamp']
         
-        # Salva no Banco de Dados
         conn = sqlite3.connect('base_scouts_futebol.db')
         df_final[todas_cols].to_sql('scouts', conn, if_exists='replace', index=False)
         conn.close()
         
-        print(f"💾 SUCESSO! Banco 'base_scouts_futebol.db' criado com {len(df_final)} jogadores.")
+        print(f"💾 SUCESSO! Banco de dados atualizado com {len(df_final)} jogadores.")
 
 if __name__ == "__main__":
     extrair_consolidado()
